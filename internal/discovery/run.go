@@ -359,11 +359,10 @@ func (c *Controller) DiscoverEntry(ctx context.Context, entry animelist.Entry) (
 	// this only stops for the first maxVerifyFailuresBeforeSkip scans (retrying is exactly
 	// what fixes a transient failure); past that it logs at Error and moves on, accepting a
 	// visible, logged gap rather than either silence or an indefinite stall.
-	var foundNewEpisodes bool
 	var verifiedCount int
 
 	for _, episodeTorrent := range parsedTorrents {
-		selectedTitle, addedTags := buildEpisodeTags(entry, episodeTorrent)
+		selectedTitle, seriesTag, addedTags := buildEpisodeTags(entry, episodeTorrent)
 
 		// Already gave up on this exact episode in an earlier scan (see the comment
 		// above) — skip straight past it rather than paying for another add call plus
@@ -379,10 +378,10 @@ func (c *Controller) DiscoverEntry(ctx context.Context, entry animelist.Entry) (
 		}
 
 		if err := c.addTorrentEntry(ctx, selectedTitle, addedTags, episodeTorrent); err != nil {
-			return foundNewEpisodes, fmt.Errorf("adding torrent to client: %w", err)
+			return verifiedCount > 0, fmt.Errorf("adding torrent to client: %w", err)
 		}
 
-		if err := c.verifyTorrentAdded(ctx, addedTags); err != nil {
+		if err := c.verifyTorrentAdded(ctx, seriesTag, addedTags); err != nil {
 			failureCount, shouldSkip := c.verifyFailures.recordFailure(addedTags)
 			if !shouldSkip {
 				logger.
@@ -404,7 +403,6 @@ func (c *Controller) DiscoverEntry(ctx context.Context, entry animelist.Entry) (
 		}
 
 		c.verifyFailures.recordSuccess(addedTags)
-		foundNewEpisodes = true
 		verifiedCount++
 	}
 
@@ -417,5 +415,5 @@ func (c *Controller) DiscoverEntry(ctx context.Context, entry animelist.Entry) (
 		Any("filterData", filterData).
 		Msg("entry discovery finished")
 
-	return foundNewEpisodes, nil
+	return verifiedCount > 0, nil
 }

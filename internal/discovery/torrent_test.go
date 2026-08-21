@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/sonalys/animeman/pkg/v1/torrentclient"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeTorrentClient implements TorrentClient for tests. List returns torrentsAfterCalls[n]
@@ -58,9 +60,7 @@ func Test_hasAllTags(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := hasAllTags(tt.have, tt.want); got != tt.out {
-				t.Errorf("hasAllTags(%v, %v) = %v, want %v", tt.have, tt.want, got, tt.out)
-			}
+			assert.Equal(t, tt.out, hasAllTags(tt.have, tt.want))
 		})
 	}
 }
@@ -73,12 +73,9 @@ func Test_verifyTorrentAdded_appearsImmediately(t *testing.T) {
 	}
 	c := newTestController(client)
 
-	if err := c.verifyTorrentAdded(context.Background(), []string{"!show", "s1e1"}); err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if client.calls != 1 {
-		t.Errorf("expected exactly 1 List call, got %d", client.calls)
-	}
+	err := c.verifyTorrentAdded(context.Background(), "!show", []string{"!show", "s1e1"})
+	require.NoError(t, err)
+	assert.Equal(t, 1, client.calls, "expected exactly 1 List call")
 }
 
 func Test_verifyTorrentAdded_appearsAfterAFewPolls(t *testing.T) {
@@ -88,19 +85,16 @@ func Test_verifyTorrentAdded_appearsAfterAFewPolls(t *testing.T) {
 
 	client := &fakeTorrentClient{
 		torrentsAfterCalls: [][]torrentclient.Torrent{
-			{},                                                      // not there yet
-			{{Hash: "other", Tags: []string{"!show", "s1e2"}}},      // a different episode, doesn't count
+			{}, // not there yet
+			{{Hash: "other", Tags: []string{"!show", "s1e2"}}},       // a different episode, doesn't count
 			{{Hash: "abc", Tags: []string{"!show", "s1e1", "1080"}}}, // there, extra tag doesn't matter
 		},
 	}
 	c := newTestController(client)
 
-	if err := c.verifyTorrentAdded(context.Background(), []string{"!show", "s1e1"}); err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if client.calls != 3 {
-		t.Errorf("expected exactly 3 List calls, got %d", client.calls)
-	}
+	err := c.verifyTorrentAdded(context.Background(), "!show", []string{"!show", "s1e1"})
+	require.NoError(t, err)
+	assert.Equal(t, 3, client.calls, "expected exactly 3 List calls")
 }
 
 func Test_verifyTorrentAdded_neverAppears(t *testing.T) {
@@ -114,10 +108,8 @@ func Test_verifyTorrentAdded_neverAppears(t *testing.T) {
 	}
 	c := newTestController(client)
 
-	err := c.verifyTorrentAdded(context.Background(), []string{"!show", "s1e1"})
-	if err == nil {
-		t.Fatal("expected an error, got nil")
-	}
+	err := c.verifyTorrentAdded(context.Background(), "!show", []string{"!show", "s1e1"})
+	assert.Error(t, err)
 }
 
 func Test_verifyTorrentAdded_respectsContextCancellation(t *testing.T) {
@@ -133,29 +125,8 @@ func Test_verifyTorrentAdded_respectsContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := c.verifyTorrentAdded(ctx, []string{"!show", "s1e1"})
-	if err == nil {
-		t.Fatal("expected an error from cancelled context, got nil")
-	}
-}
-
-// A zero-value tags.Tag (parser.Parse's default when it can't extract season/episode
-// info) String()s to "" — same as any other tag field that ends up empty. Requiring a
-// literal "" tag to appear in qBittorrent's response would either always fail (if
-// qBittorrent strips empty tags rather than storing them) or match unreliably, so
-// verifyTorrentAdded is expected to skip verification entirely rather than produce that.
-func Test_verifyTorrentAdded_skipsWhenNoUsableTags(t *testing.T) {
-	client := &fakeTorrentClient{
-		torrentsAfterCalls: [][]torrentclient.Torrent{{}}, // nothing in the client at all
-	}
-	c := newTestController(client)
-
-	if err := c.verifyTorrentAdded(context.Background(), []string{"", ""}); err != nil {
-		t.Fatalf("expected verification to be skipped (nil error), got %v", err)
-	}
-	if client.calls != 0 {
-		t.Errorf("expected no List calls when there's nothing usable to check, got %d", client.calls)
-	}
+	err := c.verifyTorrentAdded(ctx, "!show", []string{"!show", "s1e1"})
+	assert.Error(t, err)
 }
 
 func Test_verifyTorrentAdded_ignoresEmptyTagsButUsesRealOnes(t *testing.T) {
@@ -166,7 +137,6 @@ func Test_verifyTorrentAdded_ignoresEmptyTagsButUsesRealOnes(t *testing.T) {
 	}
 	c := newTestController(client)
 
-	if err := c.verifyTorrentAdded(context.Background(), []string{"!show", ""}); err != nil {
-		t.Fatalf("expected the non-empty tag alone to verify successfully, got %v", err)
-	}
+	err := c.verifyTorrentAdded(context.Background(), "!show", []string{"!show", ""})
+	assert.NoError(t, err, "expected the non-empty tag alone to verify successfully")
 }

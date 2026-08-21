@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -143,7 +144,7 @@ func isASCII(s string) bool {
 // Tags are built from the anime list title, not nyaa's raw parsed title (see the comment
 // on addTorrentEntry below), so this — not recomputing independently — is the only correct
 // way to get the tags a given add would actually use.
-func buildEpisodeTags(animeListEntry animelist.Entry, parsedNyaa parser.ParsedNyaa) (selectedTitle string, tags []string) {
+func buildEpisodeTags(animeListEntry animelist.Entry, parsedNyaa parser.ParsedNyaa) (selectedTitle, seriesTag string, tags []string) {
 	selectedTitle = selectIdealTitle(animeListEntry.Titles)
 
 	meta := parsedNyaa.ExtractedMetadata.Clone()
@@ -151,20 +152,11 @@ func buildEpisodeTags(animeListEntry animelist.Entry, parsedNyaa parser.ParsedNy
 	// This behavior avoids different sources creating different tags and downloading the same episode twice.
 	meta.Title = selectedTitle
 
-	return selectedTitle, meta.BuildTorrentTags()
+	return selectedTitle, meta.BuildSeriesTag(), meta.BuildTorrentTags()
 }
 
-// AddTorrentEntry receives an anime list entry and a downloadable torrent.
-// It will configure all necessary metadata and send it to your torrent client.
-func (c *Controller) AddTorrentEntry(ctx context.Context, animeListEntry animelist.Entry, parsedNyaa parser.ParsedNyaa) error {
-	selectedTitle, tags := buildEpisodeTags(animeListEntry, parsedNyaa)
-	return c.addTorrentEntry(ctx, selectedTitle, tags, parsedNyaa)
-}
-
-// addTorrentEntry is AddTorrentEntry's implementation, taking the already-built title/tags
-// (see buildEpisodeTags) rather than computing them itself, so a caller that already needed
-// them beforehand (to consult verifyFailureTracker before deciding whether to add at all)
-// isn't forced to either recompute them or discard the first computation.
+// addTorrentEntry takes the already-built title/tags (see buildEpisodeTags) so callers
+// that need them beforehand don't have to recompute them.
 func (c *Controller) addTorrentEntry(ctx context.Context, selectedTitle string, tags []string, parsedNyaa parser.ParsedNyaa) error {
 	req := &torrentclient.AddTorrentConfig{
 		Tags:     tags,
@@ -189,36 +181,21 @@ func (c *Controller) addTorrentEntry(ctx context.Context, selectedTitle string, 
 // the add call succeeding isn't enough on its own. Polls rather than trusting a single
 // check immediately after add, since qBittorrent's background fetch takes a moment even
 // when it succeeds.
-func (c *Controller) verifyTorrentAdded(ctx context.Context, addedTags []string) error {
+func (c *Controller) verifyTorrentAdded(ctx context.Context, seriesTag string, addedTags []string) error {
 	// Metadata.Tag can be the zero value when title parsing couldn't extract season/
 	// episode info (see parser.Parse's tags.Tag{} default) — its String() is "" in that
 	// case, same as any other tag field that ends up empty. An empty string isn't a tag
 	// qBittorrent can be reliably checked against (it may be stripped rather than stored
 	// as a literal empty tag), so require-matching on it would either always fail this
-	// entry's verification or accidentally match on nothing. Filter those out; if that
-	// leaves nothing usable there's no way to distinguish this add from any other in the
-	// category, so skip verification rather than produce an unreliable result.
-	usableTags := make([]string, 0, len(addedTags))
-	for _, t := range addedTags {
-		if t != "" {
-			usableTags = append(usableTags, t)
-		}
-	}
-	if len(usableTags) == 0 {
-		return nil
-	}
+	// entry's verification or accidentally match on nothing. Filter those out.
+	usableTags := utils.Filter(addedTags, func(t string) bool { return t != "" })
 
 	deadline := time.Now().Add(torrentAddVerifyTimeout)
 
 	for {
 		torrents, err := c.dep.TorrentClient.List(ctx, &torrentclient.ListTorrentConfig{
 			Category: &c.dep.Config.Category,
-			// filter server-side by one usable tag to keep the response small; every
-			// usable tag is still checked client-side below since ListTorrentConfig only
-			// supports filtering on one tag at a time, and a single tag isn't precise
-			// enough on its own to rule out a same-episode-number collision between two
-			// different shows sharing the series tag's absence.
-			Tag: &usableTags[0],
+			Tag:      &seriesTag,
 		})
 		if err != nil {
 			return fmt.Errorf("listing torrents: %w", err)
@@ -247,14 +224,7 @@ func (c *Controller) verifyTorrentAdded(ctx context.Context, addedTags []string)
 
 func hasAllTags(have, want []string) bool {
 	for _, w := range want {
-		found := false
-		for _, h := range have {
-			if h == w {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.Contains(have, w) {
 			return false
 		}
 	}
