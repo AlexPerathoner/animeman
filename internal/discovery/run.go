@@ -342,15 +342,75 @@ func (c *Controller) DiscoverEntry(ctx context.Context, entry animelist.Entry) (
 	parsedTorrents := parseResults(entry, torrentResults)
 	parsedTorrents = filterRelevantResults(entry, parsedTorrents, latestTag, filterData)
 
-	foundNewEpisodes := len(parsedTorrents) > 0
+	// parsedTorrents is already in ascending season/episode order (see sortResults) —
+	// that ordering matters here: verifying each add before moving to the next, and
+	// stopping at the first one that doesn't verify, guarantees findLatestTag (which
+	// only looks at what's actually present in the torrent client, not any memory of
+	// what was attempted) can never end up believing a later episode without an earlier
+	// one having actually landed. Without this, a later episode succeeding while an
+	// earlier one silently failed (accepted by the add call, but never actually fetched
+	// by qBittorrent) would permanently hide the earlier gap: the next scan would see
+	// the later tag as "latest" and never look for anything below it again.
+	//
+	// Stopping unconditionally on the first failure would trade that silent-gap bug for a
+	// different one, though: a genuinely dead nyaa link (not a transient hiccup) would then
+	// fail verification on every scan forever, blocking every episode after it
+	// indefinitely — worse than the pre-verification behavior for that specific case. So
+	// this only stops for the first maxVerifyFailuresBeforeSkip scans (retrying is exactly
+	// what fixes a transient failure); past that it logs at Error and moves on, accepting a
+	// visible, logged gap rather than either silence or an indefinite stall.
+	var foundNewEpisodes bool
+	var verifiedCount int
 
 	for _, episodeTorrent := range parsedTorrents {
-		if err := c.AddTorrentEntry(ctx, entry, episodeTorrent); err != nil {
-			return false, fmt.Errorf("adding torrent to client: %w", err)
+		selectedTitle, addedTags := buildEpisodeTags(entry, episodeTorrent)
+
+		// Already gave up on this exact episode in an earlier scan (see the comment
+		// above) — skip straight past it rather than paying for another add call plus
+		// verifyTorrentAdded's full poll timeout on something already known to keep
+		// failing. Scoped to this specific tag set, not the whole entry, so later
+		// episodes are unaffected and still get their own full add+verify+retry budget.
+		if c.verifyFailures.pastThreshold(addedTags) {
+			logger.
+				Debug().
+				Stringer("tag", episodeTorrent.ExtractedMetadata.Tag).
+				Msg("skipping episode still not verified after repeated attempts in earlier scans")
+			continue
 		}
+
+		if err := c.addTorrentEntry(ctx, selectedTitle, addedTags, episodeTorrent); err != nil {
+			return foundNewEpisodes, fmt.Errorf("adding torrent to client: %w", err)
+		}
+
+		if err := c.verifyTorrentAdded(ctx, addedTags); err != nil {
+			failureCount, shouldSkip := c.verifyFailures.recordFailure(addedTags)
+			if !shouldSkip {
+				logger.
+					Warn().
+					Err(err).
+					Stringer("tag", episodeTorrent.ExtractedMetadata.Tag).
+					Int("failureCount", failureCount).
+					Msg("torrent add could not be verified, stopping here for this entry so it's retried next scan instead of being silently skipped")
+				break
+			}
+
+			logger.
+				Error().
+				Err(err).
+				Stringer("tag", episodeTorrent.ExtractedMetadata.Tag).
+				Int("failureCount", failureCount).
+				Msg("torrent add still not verified after repeated attempts, giving up on this episode and moving on — likely a dead release, may need manual intervention")
+			continue
+		}
+
+		c.verifyFailures.recordSuccess(addedTags)
+		foundNewEpisodes = true
+		verifiedCount++
 	}
 
-	filterData.NewCount = len(parsedTorrents)
+	// Honest count even on the early-stop path above — logging len(parsedTorrents) here
+	// would claim every episode succeeded when the loop may have stopped partway through.
+	filterData.NewCount = verifiedCount
 
 	logger.
 		Info().

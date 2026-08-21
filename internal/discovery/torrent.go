@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/rs/zerolog/log"
@@ -13,6 +14,17 @@ import (
 	"github.com/sonalys/animeman/internal/utils"
 	"github.com/sonalys/animeman/pkg/v1/animelist"
 	"github.com/sonalys/animeman/pkg/v1/torrentclient"
+)
+
+// qBittorrent's torrents/add returns success as soon as it accepts the request, then
+// fetches the .torrent file itself, server-side, asynchronously. If that background
+// fetch fails (dead nyaa link, transient network issue), no torrent entry is ever
+// created, and the add call's own success response gives no indication of that. These
+// bound how long verifyTorrentAdded waits for the torrent to actually materialize
+// before giving up on it for this pass. Vars, not consts, so tests can shrink them.
+var (
+	torrentAddVerifyTimeout  = 10 * time.Second
+	torrentAddVerifyInterval = 2 * time.Second
 )
 
 // findLatestTag will receive an anime list entry and return all torrents listed from the anime.
@@ -124,17 +136,36 @@ func isASCII(s string) bool {
 	return true
 }
 
-// AddTorrentEntry receives an anime list entry and a downloadable torrent.
-// It will configure all necessary metadata and send it to your torrent client.
-func (c *Controller) AddTorrentEntry(ctx context.Context, animeListEntry animelist.Entry, parsedNyaa parser.ParsedNyaa) error {
-	selectedTitle := selectIdealTitle(animeListEntry.Titles)
+// buildEpisodeTags computes the tags a torrent for this (entry, parsedNyaa) pair would be
+// submitted with — pulled out of addTorrentEntry so a caller can identify an episode (to
+// consult verifyFailureTracker, for instance) before deciding whether to attempt the add
+// at all, without a second, potentially-drifting copy of the real tag-building logic.
+// Tags are built from the anime list title, not nyaa's raw parsed title (see the comment
+// on addTorrentEntry below), so this — not recomputing independently — is the only correct
+// way to get the tags a given add would actually use.
+func buildEpisodeTags(animeListEntry animelist.Entry, parsedNyaa parser.ParsedNyaa) (selectedTitle string, tags []string) {
+	selectedTitle = selectIdealTitle(animeListEntry.Titles)
 
 	meta := parsedNyaa.ExtractedMetadata.Clone()
 	// Use nyaa metadata, but with anime list title.
 	// This behavior avoids different sources creating different tags and downloading the same episode twice.
 	meta.Title = selectedTitle
-	tags := meta.BuildTorrentTags()
 
+	return selectedTitle, meta.BuildTorrentTags()
+}
+
+// AddTorrentEntry receives an anime list entry and a downloadable torrent.
+// It will configure all necessary metadata and send it to your torrent client.
+func (c *Controller) AddTorrentEntry(ctx context.Context, animeListEntry animelist.Entry, parsedNyaa parser.ParsedNyaa) error {
+	selectedTitle, tags := buildEpisodeTags(animeListEntry, parsedNyaa)
+	return c.addTorrentEntry(ctx, selectedTitle, tags, parsedNyaa)
+}
+
+// addTorrentEntry is AddTorrentEntry's implementation, taking the already-built title/tags
+// (see buildEpisodeTags) rather than computing them itself, so a caller that already needed
+// them beforehand (to consult verifyFailureTracker before deciding whether to add at all)
+// isn't forced to either recompute them or discard the first computation.
+func (c *Controller) addTorrentEntry(ctx context.Context, selectedTitle string, tags []string, parsedNyaa parser.ParsedNyaa) error {
 	req := &torrentclient.AddTorrentConfig{
 		Tags:     tags,
 		URLs:     []string{parsedNyaa.NyaaTorrent.Link},
@@ -151,6 +182,83 @@ func (c *Controller) AddTorrentEntry(ctx context.Context, animeListEntry animeli
 	}
 
 	return nil
+}
+
+// verifyTorrentAdded confirms a torrent submitted via addTorrentEntry actually exists in
+// the torrent client — see the package-level comment on torrentAddVerifyTimeout for why
+// the add call succeeding isn't enough on its own. Polls rather than trusting a single
+// check immediately after add, since qBittorrent's background fetch takes a moment even
+// when it succeeds.
+func (c *Controller) verifyTorrentAdded(ctx context.Context, addedTags []string) error {
+	// Metadata.Tag can be the zero value when title parsing couldn't extract season/
+	// episode info (see parser.Parse's tags.Tag{} default) — its String() is "" in that
+	// case, same as any other tag field that ends up empty. An empty string isn't a tag
+	// qBittorrent can be reliably checked against (it may be stripped rather than stored
+	// as a literal empty tag), so require-matching on it would either always fail this
+	// entry's verification or accidentally match on nothing. Filter those out; if that
+	// leaves nothing usable there's no way to distinguish this add from any other in the
+	// category, so skip verification rather than produce an unreliable result.
+	usableTags := make([]string, 0, len(addedTags))
+	for _, t := range addedTags {
+		if t != "" {
+			usableTags = append(usableTags, t)
+		}
+	}
+	if len(usableTags) == 0 {
+		return nil
+	}
+
+	deadline := time.Now().Add(torrentAddVerifyTimeout)
+
+	for {
+		torrents, err := c.dep.TorrentClient.List(ctx, &torrentclient.ListTorrentConfig{
+			Category: &c.dep.Config.Category,
+			// filter server-side by one usable tag to keep the response small; every
+			// usable tag is still checked client-side below since ListTorrentConfig only
+			// supports filtering on one tag at a time, and a single tag isn't precise
+			// enough on its own to rule out a same-episode-number collision between two
+			// different shows sharing the series tag's absence.
+			Tag: &usableTags[0],
+		})
+		if err != nil {
+			return fmt.Errorf("listing torrents: %w", err)
+		}
+		for _, t := range torrents {
+			if hasAllTags(t.Tags, usableTags) {
+				return nil
+			}
+		}
+
+		if time.Now().After(deadline) {
+			return fmt.Errorf(
+				"torrent tagged %v never appeared in the client after %s — the add request was accepted, "+
+					"but the download likely failed to start (dead link, or a network issue reaching it)",
+				usableTags, torrentAddVerifyTimeout,
+			)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(torrentAddVerifyInterval):
+		}
+	}
+}
+
+func hasAllTags(have, want []string) bool {
+	for _, w := range want {
+		found := false
+		for _, h := range have {
+			if h == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // TorrentRegenerateTags will scan all torrents from the configured category and update their tags.

@@ -19,6 +19,7 @@ type (
 	Controller struct {
 		dep             Dependencies
 		intervalTracker *IntervalTracker
+		verifyFailures  *verifyFailureTracker
 	}
 )
 
@@ -26,6 +27,7 @@ func New(dep Dependencies) *Controller {
 	return &Controller{
 		dep:             dep,
 		intervalTracker: NewIntervalTracker(dep.Config.PollFrequency),
+		verifyFailures:  newVerifyFailureTracker(),
 	}
 }
 
