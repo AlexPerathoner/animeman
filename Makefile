@@ -16,7 +16,7 @@ build:
 	CGO_ENABLED=0 go build -o ./bin/animeman ./cmd/service/main.go
 
 image:
-	docker build -t ${IMG}:latest -f builders/Dockerfile.linux.$(ARCHITECTURE) .
+	docker build -t ${IMG}:latest -f Dockerfile.build .
 
 push:
 	docker push ${IMG}
