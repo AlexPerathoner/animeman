@@ -1,8 +1,6 @@
 package discovery
 
 import (
-	"time"
-
 	"github.com/sonalys/animeman/internal/integrations/nyaa"
 	"github.com/sonalys/animeman/internal/parser"
 	"github.com/sonalys/animeman/internal/utils"
@@ -18,7 +16,7 @@ func filterMetadata(
 	filterData *FilterData,
 ) func(e nyaa.Item) bool {
 	return func(nyaaEntry nyaa.Item) bool {
-		publishedDate := utils.Must(time.Parse(time.RFC1123Z, nyaaEntry.PubDate))
+		publishedDate := utils.Must(nyaaEntry.PublishedDate())
 
 		// Compares publishing date with anime start date, 2 days offset to prevent wrong timezone and hour precision.
 		if publishedDate.Before(entry.StartDate.AddDate(0, 0, -2)) {

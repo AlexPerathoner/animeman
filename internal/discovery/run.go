@@ -190,11 +190,14 @@ func sortResults(entry animelist.Entry, results []parser.ParsedNyaa) []parser.Pa
 }
 
 // filterRelevantResults is responsible for filtering and ordering the raw Nyaa feed into valid downloadable torrents.
+// preferredSources is optional (empty = off); see applySourcePriority.
 func filterRelevantResults(
 	entry animelist.Entry,
 	results []parser.ParsedNyaa,
 	latestTag tags.Tag,
 	filterData *FilterData,
+	preferredSources []string,
+	preferredSourcesDelay time.Duration,
 ) []parser.ParsedNyaa {
 	results = slices.Clone(results)
 	// Requires sorted input, since we use tag progression.
@@ -215,10 +218,100 @@ func filterRelevantResults(
 		})
 	}
 
+	if len(preferredSources) > 0 {
+		results = applySourcePriority(results, preferredSources, preferredSourcesDelay, time.Now(), filterData)
+	}
+
 	results, latestDetectedTag := filterEpisodes(results, latestTag, filterData)
 	filterData.NewLatestTag = latestDetectedTag
 
 	return results
+}
+
+// applySourcePriority walks the (tag-ascending) result list one episode at a time:
+//
+//   - if a preferred-source release exists for the episode, keep only those;
+//   - else if the oldest non-preferred release for it has been up for at least
+//     delay, accept the non-preferred releases (the wait is over);
+//   - else stop here entirely — drop this episode and every later one this scan.
+//
+// The last point matters: animeman derives "latest episode" purely from what's
+// present in the torrent client (see findLatestTag), so simply not adding a
+// deferred episode is enough for it to be reconsidered on the next scan. But a
+// LATER episode must not be added while an earlier one is still being held, or
+// the earlier one would be permanently skipped. Stopping at the first held
+// episode preserves the no-gaps invariant DiscoverEntry relies on.
+//
+// Multi-episode batches are passed through untouched: the "wait for a preferred
+// release" behaviour is about the per-episode release race, and filterEpisodes
+// owns batch-vs-episode containment — second-guessing it here would let a batch
+// that filterEpisodes was going to discard anyway trigger a hold.
+func applySourcePriority(
+	results []parser.ParsedNyaa,
+	preferred []string,
+	delay time.Duration,
+	now time.Time,
+	filterData *FilterData,
+) []parser.ParsedNyaa {
+	isPreferred := func(source string) bool {
+		return slices.ContainsFunc(preferred, func(p string) bool { return strings.EqualFold(p, source) })
+	}
+
+	out := make([]parser.ParsedNyaa, 0, len(results))
+
+	for start, end := 0, 0; start < len(results); start = end {
+		// Collect the run of entries sharing this episode tag (input is tag-sorted).
+		end = start
+		for end < len(results) && tagCompare(results[end].ExtractedMetadata.Tag, results[start].ExtractedMetadata.Tag) == 0 {
+			end++
+		}
+		group := results[start:end]
+
+		if group[0].ExtractedMetadata.Tag.IsMultiEpisode() {
+			out = append(out, group...)
+			continue
+		}
+
+		var preferredHits, other []parser.ParsedNyaa
+		for _, r := range group {
+			if isPreferred(r.ExtractedMetadata.Source) {
+				preferredHits = append(preferredHits, r)
+			} else {
+				other = append(other, r)
+			}
+		}
+
+		if len(preferredHits) > 0 {
+			out = append(out, preferredHits...)
+			filterData.DiscardReason[DiscardReasonSourceNotPreferred] += uint(len(other))
+		} else if now.Sub(oldestPubDate(other)) >= delay {
+			out = append(out, other...) // grace elapsed — take what we have
+		} else {
+			// Still waiting on a preferred release for this episode. Defer it and
+			// everything after it (see the doc comment).
+			filterData.DiscardReason[DiscardReasonAwaitingPreferredSource] += uint(len(results) - start)
+			break
+		}
+	}
+
+	return out
+}
+
+// oldestPubDate returns the earliest parseable Nyaa publish date in the set, or
+// the zero time if none parse (which makes callers treat the release as old
+// enough — fail open rather than hold an episode forever on a parse quirk).
+func oldestPubDate(entries []parser.ParsedNyaa) time.Time {
+	var oldest time.Time
+	for _, e := range entries {
+		t, err := e.NyaaTorrent.PublishedDate()
+		if err != nil {
+			return time.Time{}
+		}
+		if oldest.IsZero() || t.Before(oldest) {
+			oldest = t
+		}
+	}
+	return oldest
 }
 
 type (
@@ -234,12 +327,14 @@ type (
 )
 
 const (
-	DiscardReasonNotBatch              DiscardReason = "not_batch"
-	DiscardReasonNoSeeder              DiscardReason = "no_seeder"
-	DiscardReasonOlderEpisode          DiscardReason = "older_episode"
-	DiscardReasonPublishedDateMismatch DiscardReason = "publish_date_mismatch"
-	DiscardReasonEpisodeCountMismatch  DiscardReason = "episode_count_mismatch"
-	DiscardReasonTitleMismatch         DiscardReason = "title_mismatch"
+	DiscardReasonNotBatch                DiscardReason = "not_batch"
+	DiscardReasonNoSeeder                DiscardReason = "no_seeder"
+	DiscardReasonOlderEpisode            DiscardReason = "older_episode"
+	DiscardReasonPublishedDateMismatch   DiscardReason = "publish_date_mismatch"
+	DiscardReasonEpisodeCountMismatch    DiscardReason = "episode_count_mismatch"
+	DiscardReasonTitleMismatch           DiscardReason = "title_mismatch"
+	DiscardReasonSourceNotPreferred      DiscardReason = "source_not_preferred"
+	DiscardReasonAwaitingPreferredSource DiscardReason = "awaiting_preferred_source"
 )
 
 func (c *Controller) NyaaSearch(
@@ -340,7 +435,8 @@ func (c *Controller) DiscoverEntry(ctx context.Context, entry animelist.Entry) (
 	filterData.LatestTag = latestTag
 
 	parsedTorrents := parseResults(entry, torrentResults)
-	parsedTorrents = filterRelevantResults(entry, parsedTorrents, latestTag, filterData)
+	parsedTorrents = filterRelevantResults(entry, parsedTorrents, latestTag, filterData,
+		c.dep.Config.PreferredSources, c.dep.Config.PreferredSourcesDelay)
 
 	// parsedTorrents is already in ascending season/episode order (see sortResults) —
 	// that ordering matters here: verifying each add before moving to the next, and

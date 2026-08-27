@@ -5,12 +5,14 @@ import (
 )
 
 type Config struct {
-	SearchSuffix     string
-	Sources          []string
-	Qualitites       []string
-	Category         string
-	RenameTorrent    bool
-	DownloadPath     string
-	CreateShowFolder bool
-	PollFrequency    time.Duration
+	SearchSuffix          string
+	Sources               []string
+	PreferredSources      []string
+	PreferredSourcesDelay time.Duration
+	Qualitites            []string
+	Category              string
+	RenameTorrent         bool
+	DownloadPath          string
+	CreateShowFolder      bool
+	PollFrequency         time.Duration
 }

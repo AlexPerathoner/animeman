@@ -3,6 +3,7 @@ package nyaa
 import (
 	"encoding/xml"
 	"net/http"
+	"time"
 )
 
 const API_URL = "https://nyaa.si/?page=rss"
@@ -60,4 +61,9 @@ func New(client *http.Client, c Config) *API {
 		config: c,
 		client: client,
 	}
+}
+
+// PublishedDate parses the RSS PubDate field (RFC1123Z, the format Nyaa emits).
+func (i Item) PublishedDate() (time.Time, error) {
+	return time.Parse(time.RFC1123Z, i.PubDate)
 }

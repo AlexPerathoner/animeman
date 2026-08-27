@@ -31,6 +31,15 @@ The purpose of this tool is to download the latest RSS entry for each episode.
 It prioritizes the highest provided quality, respecting your filter.
 If there are multiple sources for the same quality, it should choose the one with the highest number of seeders.
 
+### Source priority
+
+By default all `sources` are equal. Set `preferredSources` to a subset and animeman
+will only fall back to a non-preferred group for an episode once no preferred release
+has appeared within `preferredSourcesDelay` (default `24h`, measured from the oldest
+available non-preferred release). While an episode is being held, later episodes are
+held too, so nothing is skipped — animeman re-evaluates every scan and grabs the
+preferred release the moment it shows up.
+
 ## Configuration
 
 Animeman will generate a boilerplate config for the first time.  
@@ -48,6 +57,11 @@ rssConfig:
   sources:
       - source1 # replace with your sources or remove the sources field to fetch all.
       - source2
+  preferredSources: # optional. release groups that win an episode immediately.
+      - source1       # if only non-preferred groups have an episode, animeman waits
+  preferredSourcesDelay: 24h0m0s # for a preferred release up to this long (default 24h),
+                                 # then takes the best non-preferred one. omit both fields
+                                 # to treat every source equally (previous behaviour).
   qualities:
       - 1080 # filter for 1080, 720, HEVC or remove to fetch all.
   customParameters:

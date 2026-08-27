@@ -3,6 +3,8 @@ package configs
 import (
 	"fmt"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -61,12 +63,21 @@ func (t RSSType) Validate() error {
 }
 
 type RSSConfig struct {
-	Type             RSSType           `yaml:"type"`
-	SearchSuffix     string            `yaml:"searchSuffix"`
-	Sources          []string          `yaml:"sources"`
-	Qualities        []string          `yaml:"qualities"`
-	PollFrequency    time.Duration     `yaml:"pollFrequency"`
-	CustomParameters map[string]string `yaml:"customParameters"`
+	Type         RSSType  `yaml:"type"`
+	SearchSuffix string   `yaml:"searchSuffix"`
+	Sources      []string `yaml:"sources"`
+	// PreferredSources, when set, are release groups that win immediately for an
+	// episode. If only non-preferred releases exist for a given episode, animeman
+	// holds off on it until either a preferred release appears or the oldest
+	// available non-preferred release has been up for PreferredSourcesDelay — then
+	// it takes the non-preferred one. Empty = every source is equal (default).
+	PreferredSources []string `yaml:"preferredSources"`
+	// PreferredSourcesDelay is the grace window described above. Ignored unless
+	// PreferredSources is set; defaults to 24h when PreferredSources is set without it.
+	PreferredSourcesDelay time.Duration     `yaml:"preferredSourcesDelay"`
+	Qualities             []string          `yaml:"qualities"`
+	PollFrequency         time.Duration     `yaml:"pollFrequency"`
+	CustomParameters      map[string]string `yaml:"customParameters"`
 }
 
 func (c *RSSConfig) Validate() error {
@@ -78,6 +89,19 @@ func (c *RSSConfig) Validate() error {
 	}
 	if c.PollFrequency < time.Minute {
 		return fmt.Errorf("pollFrequency: should be at least 1 minute")
+	}
+	if len(c.PreferredSources) > 0 {
+		if c.PreferredSourcesDelay < 0 {
+			return fmt.Errorf("preferredSourcesDelay: must not be negative")
+		}
+		c.PreferredSourcesDelay = utils.Coalesce(c.PreferredSourcesDelay, 24*time.Hour)
+		if len(c.Sources) > 0 {
+			for _, p := range c.PreferredSources {
+				if !slices.ContainsFunc(c.Sources, func(s string) bool { return strings.EqualFold(s, p) }) {
+					log.Warn().Msgf("rssConfig.preferredSources: %q is not in rssConfig.sources, so it will never appear in the feed and can never win", p)
+				}
+			}
+		}
 	}
 	return nil
 }
