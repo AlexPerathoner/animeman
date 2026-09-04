@@ -75,7 +75,36 @@ torrentConfig:
   host: http://192.168.1.240:8088 # replace with your qBittorrent WebUI address.
   username: admin # replace credentials with your own
   password: adminadmin
+api: # optional. enables the rescan HTTP API. omit the block to disable.
+  addr: ":8091" # listen address. also settable via ANIMEMAN_API_ADDR.
+  token: "a-long-random-string" # also ANIMEMAN_API_TOKEN. no token => API stays off.
 ```
+
+### Rescan API
+
+When `api.addr` is set, animeman serves a tiny authenticated endpoint:
+
+```
+POST /rescan            Authorization: Bearer <token>
+  body (optional): {"titles": ["...", "..."]}   (or {"title": "..."})
+```
+
+It flags shows for an unconditional scan on the **next** poll cycle and wakes the
+poll loop immediately (no waiting out `pollFrequency`).
+
+- **titles given** → scan exactly the watched shows any of them match
+  (case-insensitive substring, or ≥0.85 text similarity — pass every title you
+  know for the show, e.g. romaji *and* english). If nothing matches, **nothing is
+  scanned** and the response is `404 {"scope":"none"}` — never a surprise
+  scan-everything.
+- **empty body** → explicit "rescan every watched show".
+
+Responds `202` with `{"scope":"all"}` or `{"scope":"shows","shows":[...]}`, `401`
+on a bad token, `404` when named titles match nothing. `GET /healthz` returns `200`.
+
+Because animeman derives "latest episode" from what is already in the torrent
+client, a whole-show rescan finds exactly what a per-episode one would — just the
+missing episodes.
 
 ## Installation
 

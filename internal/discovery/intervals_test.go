@@ -54,6 +54,35 @@ func TestGetShowKey(t *testing.T) {
 	}
 }
 
+func TestForceRescan(t *testing.T) {
+	it := NewIntervalTracker(5 * time.Minute)
+
+	// no request pending
+	forced, all := it.consumePending()
+	assert.False(t, all)
+	assert.Empty(t, forced)
+
+	// force everything
+	it.MarkForceRescan(nil)
+	forced, all = it.consumePending()
+	assert.True(t, all)
+	assert.Empty(t, forced)
+
+	// consumed — next pass sees nothing
+	_, all = it.consumePending()
+	assert.False(t, all)
+
+	// force specific shows
+	it.MarkForceRescan([]string{"Show A", "Show B"})
+	forced, all = it.consumePending()
+	assert.False(t, all)
+	assert.True(t, forced["Show A"])
+	assert.True(t, forced["Show B"])
+
+	forced, _ = it.consumePending()
+	assert.Empty(t, forced)
+}
+
 func TestUpdateState(t *testing.T) {
 	tracker := NewIntervalTracker(5 * time.Minute)
 	entry := animelist.Entry{

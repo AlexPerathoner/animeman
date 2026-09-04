@@ -42,9 +42,17 @@ func (c *Controller) RunDiscovery(ctx context.Context) error {
 	scannedCount := 0
 	skippedCount := 0
 
+	// API-requested rescans: read and cleared once per pass, overriding the adaptive interval.
+	forcedKeys, forceAll := c.intervalTracker.consumePending()
+	if forceAll {
+		log.Debug().Msg("forced rescan of all shows this pass")
+	}
+
 	for _, entry := range entries {
+		forced := forceAll || forcedKeys[getShowKey(entry.Titles)]
+
 		// Check if this show should be scanned based on adaptive intervals
-		if !c.intervalTracker.ShouldScanNow(entry) {
+		if !forced && !c.intervalTracker.ShouldScanNow(entry) {
 			skippedCount++
 			log.
 				Trace().

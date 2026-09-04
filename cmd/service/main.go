@@ -113,6 +113,8 @@ func main() {
 			DownloadPath:          config.DownloadPath,
 			CreateShowFolder:      config.CreateShowFolder,
 			PollFrequency:         config.PollFrequency,
+			APIAddr:               config.API.Addr,
+			APIToken:              config.API.Token,
 		},
 	})
 	if err := c.Start(ctx); err != nil {

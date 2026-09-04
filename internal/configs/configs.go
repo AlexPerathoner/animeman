@@ -140,6 +140,30 @@ func (c TorrentConfig) Validate() error {
 	return nil
 }
 
+// APIConfig enables the rescan HTTP API. Values fall back to the
+// ANIMEMAN_API_ADDR / ANIMEMAN_API_TOKEN env vars, so a deployment can inject the
+// token as a secret without templating config.yaml.
+type APIConfig struct {
+	Addr  string `yaml:"addr"`
+	Token string `yaml:"token"`
+}
+
+func (c *APIConfig) Validate() error {
+	if v := os.Getenv("ANIMEMAN_API_ADDR"); v != "" {
+		c.Addr = v
+	}
+	if v := os.Getenv("ANIMEMAN_API_TOKEN"); v != "" {
+		c.Token = v
+	}
+	// A deployment may hardcode addr and gate the feature purely on the token being
+	// present — no token means the API stays off rather than failing startup.
+	if c.Addr != "" && c.Token == "" {
+		log.Warn().Msg("rescan API disabled: api.addr is set but no token (api.token / ANIMEMAN_API_TOKEN)")
+		c.Addr = ""
+	}
+	return nil
+}
+
 type LogLevel string
 
 const (
@@ -153,7 +177,8 @@ type Config struct {
 	AnimeListConfig `yaml:"animeList"`
 	RSSConfig       `yaml:"rssConfig"`
 	TorrentConfig   `yaml:"torrentConfig"`
-	LogLevel        LogLevel `yaml:"logLevel"`
+	API             APIConfig `yaml:"api"`
+	LogLevel        LogLevel  `yaml:"logLevel"`
 }
 
 func (l LogLevel) Convert() zerolog.Level {
@@ -178,6 +203,9 @@ func (c *Config) Validate() error {
 	}
 	if err := c.TorrentConfig.Validate(); err != nil {
 		return fmt.Errorf("torrentConfig.%w", err)
+	}
+	if err := c.API.Validate(); err != nil {
+		return fmt.Errorf("api.%w", err)
 	}
 	return nil
 }

@@ -19,6 +19,9 @@ type IntervalTracker struct {
 	mu            sync.RWMutex
 	pollFrequency time.Duration
 	state         map[string]ShowScanState // Key is the concatenated show titles
+	// forced-rescan requests from the API — consumed at the start of each pass.
+	forced   map[string]bool // show keys to scan unconditionally next pass
+	forceAll bool            // scan every show unconditionally next pass
 }
 
 // NewIntervalTracker creates a new interval tracker with a configured poll frequency.
@@ -26,7 +29,33 @@ func NewIntervalTracker(pollFrequency time.Duration) *IntervalTracker {
 	return &IntervalTracker{
 		pollFrequency: pollFrequency,
 		state:         make(map[string]ShowScanState),
+		forced:        make(map[string]bool),
 	}
+}
+
+// MarkForceRescan queues shows for an unconditional scan on the next discovery
+// pass. Empty keys means every show. Safe for concurrent use (API goroutine).
+func (it *IntervalTracker) MarkForceRescan(keys []string) {
+	it.mu.Lock()
+	defer it.mu.Unlock()
+	if len(keys) == 0 {
+		it.forceAll = true
+		return
+	}
+	for _, k := range keys {
+		it.forced[k] = true
+	}
+}
+
+// consumePending atomically reads and clears the forced-rescan flags. Called once
+// at the start of each discovery pass, so a request that lands mid-pass is picked
+// up by the next one — and the trigger channel makes that next pass immediate.
+func (it *IntervalTracker) consumePending() (forced map[string]bool, all bool) {
+	it.mu.Lock()
+	defer it.mu.Unlock()
+	forced, all = it.forced, it.forceAll
+	it.forced, it.forceAll = make(map[string]bool), false
+	return forced, all
 }
 
 // getShowKey creates a unique key for a show based on its titles.

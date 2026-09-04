@@ -15,4 +15,7 @@ type Config struct {
 	DownloadPath          string
 	CreateShowFolder      bool
 	PollFrequency         time.Duration
+	// APIAddr enables the rescan HTTP API (e.g. ":8091"); empty disables it.
+	APIAddr  string
+	APIToken string
 }
