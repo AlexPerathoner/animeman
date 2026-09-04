@@ -128,6 +128,6 @@ func Test_filterRelevantResults_sourcePriorityOff(t *testing.T) {
 		spEntry("ASW", 1, 1, now.Add(-time.Hour)),
 	}
 	// empty preferredSources => behaves exactly as before, non-preferred passes through
-	got := filterRelevantResults(animelist.Entry{}, parsed, tags.Zero, newFilterData(), nil, 0)
+	got := filterRelevantResults(animelist.Entry{}, parsed, tags.Zero, newFilterData(), Config{})
 	require.Len(t, got, 1)
 }

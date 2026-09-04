@@ -198,14 +198,13 @@ func sortResults(entry animelist.Entry, results []parser.ParsedNyaa) []parser.Pa
 }
 
 // filterRelevantResults is responsible for filtering and ordering the raw Nyaa feed into valid downloadable torrents.
-// preferredSources is optional (empty = off); see applySourcePriority.
+// Preferred sources / qualities are optional (empty = off); see applyPriority.
 func filterRelevantResults(
 	entry animelist.Entry,
 	results []parser.ParsedNyaa,
 	latestTag tags.Tag,
 	filterData *FilterData,
-	preferredSources []string,
-	preferredSourcesDelay time.Duration,
+	cfg Config,
 ) []parser.ParsedNyaa {
 	results = slices.Clone(results)
 	// Requires sorted input, since we use tag progression.
@@ -226,8 +225,14 @@ func filterRelevantResults(
 		})
 	}
 
-	if len(preferredSources) > 0 {
-		results = applySourcePriority(results, preferredSources, preferredSourcesDelay, time.Now(), filterData)
+	now := time.Now()
+	if len(cfg.PreferredSources) > 0 {
+		results = applyPriority(results, isPreferredSource(cfg.PreferredSources), cfg.PreferredSourcesDelay, now, filterData,
+			DiscardReasonSourceNotPreferred, DiscardReasonAwaitingPreferredSource)
+	}
+	if len(cfg.PreferredQualities) > 0 {
+		results = applyPriority(results, isPreferredQuality(cfg.PreferredQualities), cfg.PreferredQualitiesDelay, now, filterData,
+			DiscardReasonQualityNotPreferred, DiscardReasonAwaitingPreferredQuality)
 	}
 
 	results, latestDetectedTag := filterEpisodes(results, latestTag, filterData)
@@ -236,9 +241,35 @@ func filterRelevantResults(
 	return results
 }
 
-// applySourcePriority walks the (tag-ascending) result list one episode at a time:
+func isPreferredSource(preferred []string) func(parser.ParsedNyaa) bool {
+	return func(r parser.ParsedNyaa) bool {
+		return slices.ContainsFunc(preferred, func(p string) bool {
+			return strings.EqualFold(p, r.ExtractedMetadata.Source)
+		})
+	}
+}
+
+// isPreferredQuality matches the raw torrent title against each preferred quality
+// as a case-insensitive substring — the same way rssConfig.qualities filters the
+// Nyaa query (e.g. "HEVC" matches "[1080p][HEVC x265 10bit]").
+func isPreferredQuality(preferred []string) func(parser.ParsedNyaa) bool {
+	return func(r parser.ParsedNyaa) bool {
+		title := strings.ToLower(r.NyaaTorrent.Title)
+		return slices.ContainsFunc(preferred, func(p string) bool {
+			return strings.Contains(title, strings.ToLower(p))
+		})
+	}
+}
+
+// applySourcePriority is kept for the existing tests; new callers use applyPriority.
+func applySourcePriority(results []parser.ParsedNyaa, preferred []string, delay time.Duration, now time.Time, filterData *FilterData) []parser.ParsedNyaa {
+	return applyPriority(results, isPreferredSource(preferred), delay, now, filterData,
+		DiscardReasonSourceNotPreferred, DiscardReasonAwaitingPreferredSource)
+}
+
+// applyPriority walks the (tag-ascending) result list one episode at a time:
 //
-//   - if a preferred-source release exists for the episode, keep only those;
+//   - if a preferred release exists for the episode, keep only those;
 //   - else if the oldest non-preferred release for it has been up for at least
 //     delay, accept the non-preferred releases (the wait is over);
 //   - else stop here entirely — drop this episode and every later one this scan.
@@ -254,17 +285,18 @@ func filterRelevantResults(
 // release" behaviour is about the per-episode release race, and filterEpisodes
 // owns batch-vs-episode containment — second-guessing it here would let a batch
 // that filterEpisodes was going to discard anyway trigger a hold.
-func applySourcePriority(
+//
+// Run once per preference axis (source, then quality). Each pass is idempotent on
+// an already-narrowed list, and the "defer this episode and everything after"
+// rule composes: whichever axis holds an episode first stops the scan there.
+func applyPriority(
 	results []parser.ParsedNyaa,
-	preferred []string,
+	isPreferred func(parser.ParsedNyaa) bool,
 	delay time.Duration,
 	now time.Time,
 	filterData *FilterData,
+	notPreferred, awaiting DiscardReason,
 ) []parser.ParsedNyaa {
-	isPreferred := func(source string) bool {
-		return slices.ContainsFunc(preferred, func(p string) bool { return strings.EqualFold(p, source) })
-	}
-
 	out := make([]parser.ParsedNyaa, 0, len(results))
 
 	for start, end := 0, 0; start < len(results); start = end {
@@ -282,7 +314,7 @@ func applySourcePriority(
 
 		var preferredHits, other []parser.ParsedNyaa
 		for _, r := range group {
-			if isPreferred(r.ExtractedMetadata.Source) {
+			if isPreferred(r) {
 				preferredHits = append(preferredHits, r)
 			} else {
 				other = append(other, r)
@@ -291,13 +323,13 @@ func applySourcePriority(
 
 		if len(preferredHits) > 0 {
 			out = append(out, preferredHits...)
-			filterData.DiscardReason[DiscardReasonSourceNotPreferred] += uint(len(other))
+			filterData.DiscardReason[notPreferred] += uint(len(other))
 		} else if now.Sub(oldestPubDate(other)) >= delay {
 			out = append(out, other...) // grace elapsed — take what we have
 		} else {
 			// Still waiting on a preferred release for this episode. Defer it and
 			// everything after it (see the doc comment).
-			filterData.DiscardReason[DiscardReasonAwaitingPreferredSource] += uint(len(results) - start)
+			filterData.DiscardReason[awaiting] += uint(len(results) - start)
 			break
 		}
 	}
@@ -341,8 +373,10 @@ const (
 	DiscardReasonPublishedDateMismatch   DiscardReason = "publish_date_mismatch"
 	DiscardReasonEpisodeCountMismatch    DiscardReason = "episode_count_mismatch"
 	DiscardReasonTitleMismatch           DiscardReason = "title_mismatch"
-	DiscardReasonSourceNotPreferred      DiscardReason = "source_not_preferred"
-	DiscardReasonAwaitingPreferredSource DiscardReason = "awaiting_preferred_source"
+	DiscardReasonSourceNotPreferred       DiscardReason = "source_not_preferred"
+	DiscardReasonAwaitingPreferredSource  DiscardReason = "awaiting_preferred_source"
+	DiscardReasonQualityNotPreferred      DiscardReason = "quality_not_preferred"
+	DiscardReasonAwaitingPreferredQuality DiscardReason = "awaiting_preferred_quality"
 )
 
 func (c *Controller) NyaaSearch(
@@ -443,8 +477,7 @@ func (c *Controller) DiscoverEntry(ctx context.Context, entry animelist.Entry) (
 	filterData.LatestTag = latestTag
 
 	parsedTorrents := parseResults(entry, torrentResults)
-	parsedTorrents = filterRelevantResults(entry, parsedTorrents, latestTag, filterData,
-		c.dep.Config.PreferredSources, c.dep.Config.PreferredSourcesDelay)
+	parsedTorrents = filterRelevantResults(entry, parsedTorrents, latestTag, filterData, c.dep.Config)
 
 	// parsedTorrents is already in ascending season/episode order (see sortResults) —
 	// that ordering matters here: verifying each add before moving to the next, and

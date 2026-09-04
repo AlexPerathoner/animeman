@@ -74,10 +74,18 @@ type RSSConfig struct {
 	PreferredSources []string `yaml:"preferredSources"`
 	// PreferredSourcesDelay is the grace window described above. Ignored unless
 	// PreferredSources is set; defaults to 24h when PreferredSources is set without it.
-	PreferredSourcesDelay time.Duration     `yaml:"preferredSourcesDelay"`
-	Qualities             []string          `yaml:"qualities"`
-	PollFrequency         time.Duration     `yaml:"pollFrequency"`
-	CustomParameters      map[string]string `yaml:"customParameters"`
+	PreferredSourcesDelay time.Duration `yaml:"preferredSourcesDelay"`
+	Qualities             []string      `yaml:"qualities"`
+	// PreferredQualities works exactly like PreferredSources but on the release's
+	// quality/codec tokens (matched as case-insensitive substrings of the torrent
+	// title, same as Qualities). Use it to prefer e.g. HEVC but still accept a
+	// plain 1080p release once PreferredQualitiesDelay has elapsed with no HEVC.
+	// The non-preferred tokens must also be in Qualities or they never reach the
+	// feed. Empty = every listed quality is equal (default).
+	PreferredQualities      []string          `yaml:"preferredQualities"`
+	PreferredQualitiesDelay time.Duration     `yaml:"preferredQualitiesDelay"`
+	PollFrequency           time.Duration     `yaml:"pollFrequency"`
+	CustomParameters        map[string]string `yaml:"customParameters"`
 }
 
 func (c *RSSConfig) Validate() error {
@@ -99,6 +107,19 @@ func (c *RSSConfig) Validate() error {
 			for _, p := range c.PreferredSources {
 				if !slices.ContainsFunc(c.Sources, func(s string) bool { return strings.EqualFold(s, p) }) {
 					log.Warn().Msgf("rssConfig.preferredSources: %q is not in rssConfig.sources, so it will never appear in the feed and can never win", p)
+				}
+			}
+		}
+	}
+	if len(c.PreferredQualities) > 0 {
+		if c.PreferredQualitiesDelay < 0 {
+			return fmt.Errorf("preferredQualitiesDelay: must not be negative")
+		}
+		c.PreferredQualitiesDelay = utils.Coalesce(c.PreferredQualitiesDelay, 24*time.Hour)
+		if len(c.Qualities) > 0 {
+			for _, p := range c.PreferredQualities {
+				if !slices.ContainsFunc(c.Qualities, func(q string) bool { return strings.EqualFold(q, p) }) {
+					log.Warn().Msgf("rssConfig.preferredQualities: %q is not in rssConfig.qualities, so it will never appear in the feed and can never win", p)
 				}
 			}
 		}

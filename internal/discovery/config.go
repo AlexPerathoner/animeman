@@ -5,11 +5,13 @@ import (
 )
 
 type Config struct {
-	SearchSuffix          string
-	Sources               []string
-	PreferredSources      []string
-	PreferredSourcesDelay time.Duration
-	Qualitites            []string
+	SearchSuffix            string
+	Sources                 []string
+	PreferredSources        []string
+	PreferredSourcesDelay   time.Duration
+	PreferredQualities      []string
+	PreferredQualitiesDelay time.Duration
+	Qualitites              []string
 	Category              string
 	RenameTorrent         bool
 	DownloadPath          string

@@ -40,3 +40,33 @@ func Test_RSSConfig_Validate_preferredSources(t *testing.T) {
 		require.Error(t, c.Validate())
 	})
 }
+
+func Test_RSSConfig_Validate_preferredQualities(t *testing.T) {
+	base := func() *RSSConfig {
+		return &RSSConfig{Type: RSSTypeNyaa, PollFrequency: time.Minute}
+	}
+
+	t.Run("no preferred qualities: delay left untouched", func(t *testing.T) {
+		c := base()
+		require.NoError(t, c.Validate())
+		require.Zero(t, c.PreferredQualitiesDelay)
+	})
+
+	t.Run("preferred qualities without delay: defaults to 24h", func(t *testing.T) {
+		c := base()
+		c.PreferredQualities = []string{"HEVC"}
+		require.NoError(t, c.Validate())
+		require.Equal(t, 24*time.Hour, c.PreferredQualitiesDelay)
+	})
+
+	t.Run("explicit delay kept; negative rejected", func(t *testing.T) {
+		c := base()
+		c.PreferredQualities = []string{"HEVC"}
+		c.PreferredQualitiesDelay = 12 * time.Hour
+		require.NoError(t, c.Validate())
+		require.Equal(t, 12*time.Hour, c.PreferredQualitiesDelay)
+
+		c.PreferredQualitiesDelay = -time.Second
+		require.Error(t, c.Validate())
+	})
+}

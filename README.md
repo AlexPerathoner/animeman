@@ -63,7 +63,14 @@ rssConfig:
                                  # then takes the best non-preferred one. omit both fields
                                  # to treat every source equally (previous behaviour).
   qualities:
-      - 1080 # filter for 1080, 720, HEVC or remove to fetch all.
+      - HEVC # filter for 1080, 720, HEVC or remove to fetch all.
+      - 1080
+  preferredQualities: # optional. like preferredSources but on the quality/codec
+      - HEVC           # tokens. only-non-preferred episodes wait for a preferred
+  preferredQualitiesDelay: 24h0m0s # release up to this long (default 24h), then
+                                   # take the best available. non-preferred tokens
+                                   # must also be in `qualities`. omit both to
+                                   # treat every listed quality equally.
   customParameters:
     c: 1_2 # you can configure custom query parameters for the rss list call. In this example it will set ?c=1_2.
 torrentConfig:
