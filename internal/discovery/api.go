@@ -19,6 +19,8 @@ import (
 func (c *Controller) serveAPI(ctx context.Context) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /rescan", c.handleRescan)
+	mux.HandleFunc("POST /candidates", c.handleCandidates)
+	mux.HandleFunc("POST /grab", c.handleGrab)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
