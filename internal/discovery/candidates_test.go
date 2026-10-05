@@ -27,8 +27,8 @@ func TestBuildCandidates(t *testing.T) {
 		nyaaItem("[Erai-raws] Tsuihou Sareta Tensei Juukishi - 05 [720p][HEVC][Multiple Subtitle].mkv", "b", 40),
 		nyaaItem("[Erai-raws] Tsuihou Sareta Tensei Juukishi - 05 [1080p][HEVC x265][Multiple Subtitle].mkv", "c", 90),
 		nyaaItem("[Erai-raws] Tsuihou Sareta Tensei Juukishi - 04 [1080p][HEVC][Multiple Subtitle].mkv", "d", 99), // other ep
-		nyaaItem("[Judas] Tsuihou Sareta Tensei Juukishi - 01-12 (Batch) [1080p][HEVC x265]", "e", 99),       // batch
-		nyaaItem("[Erai-raws] Some Other Show - 05 [1080p][HEVC].mkv", "f", 99),                              // other show
+		nyaaItem("[Judas] Tsuihou Sareta Tensei Juukishi - 01-12 (Batch) [1080p][HEVC x265]", "e", 99),            // batch
+		nyaaItem("[Erai-raws] Some Other Show - 05 [1080p][HEVC].mkv", "f", 99),                                   // other show
 	}
 	cfg := Config{Sources: []string{"Erai-raws"}, Qualitites: []string{"HEVC", "1080"}, PreferredQualities: []string{"HEVC"}}
 
